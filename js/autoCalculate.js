@@ -36,7 +36,10 @@ chrome.storage.onChanged.addListener((changes) => {
 function setupObserver() {
   if (observer) return;
 
-  observer = new MutationObserver(debounce(calculateAllTransitTimes, 500));
+  observer = new MutationObserver(debounce(() => {
+    calculateAllTransitTimes();
+  }, 500));
+
   observer.observe(document.body, { childList: true, subtree: true });
 
   calculateAllTransitTimes();
@@ -53,9 +56,9 @@ function disconnectObserver() {
 // Debounce helper function
 function debounce(fn, delay) {
   let timer;
-  return () => {
+  return (...args) => {
     clearTimeout(timer);
-    timer = setTimeout(() => fn(), wait);
+    timer = setTimeout(() => fn(...args), delay);
   };
 }
 
