@@ -103,17 +103,43 @@ async function calculateAllTransitTimes() {
 
 // Insert calculated time into the DOM
 function insertTransitTime(row, transitTime) {
-  const nameEl = row.querySelector('.kt-user-card-v2__name');
-  if (!nameEl) return;
+  const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
+  if (!nameCell) return;
 
-  let span = nameEl.querySelector('.transit-time');
+  // Extract minutes from transitTime string
+  const timeMatch = transitTime.match(/(?:(\d+) hr )?(\d+) min/);
+  if (!timeMatch) return;
+
+  const hours = parseInt(timeMatch[1] || '0', 10);
+  const minutes = parseInt(timeMatch[2], 10);
+  const totalMinutes = (hours * 60) + minutes;
+
+  let bgColor;
+
+  if (totalMinutes <= 25) {
+    bgColor = '#b3ffcc'; // light green
+  } else if (totalMinutes <= 40) {
+    bgColor = '#e0ccff'; // light purple
+  } else if (totalMinutes <= 60) {
+    bgColor = '#ffdab3'; // light orange
+  } else {
+    bgColor = '#ffb3b3'; // light red
+  }
+
+  // Apply background color to the entire cell
+  nameCell.style.backgroundColor = bgColor;
+  nameCell.style.padding = '8px';
+  nameCell.style.borderRadius = '4px';
+
+  // Ensure transit time label is clearly visible (black color)
+  const nameElement = nameCell.querySelector('.kt-user-card-v2__name');
+  let span = nameElement.querySelector('.transit-time');
   if (!span) {
     span = document.createElement('span');
     span.className = 'transit-time';
-    span.style.cssText = 'margin-left:8px;font-weight:bold;color:green;';
-    nameEl.appendChild(span);
+    span.style.cssText = 'margin-left:8px;color:black;';
+    nameElement.appendChild(span);
   }
-
   span.textContent = `(${transitTime})`;
 }
 
