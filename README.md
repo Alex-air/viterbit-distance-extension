@@ -1,16 +1,29 @@
 
 # 🚇 Transit Time Auto-Calculator (Chrome Extension)
 
-This Chrome extension calculates public transportation transit times automatically between candidate addresses and a specified destination on Viterbit.
+This Chrome extension calculates public transportation transit times automatically between candidate addresses listed on Viterbit and a selected destination.
 
 ## ✨ Features
 
-- Automatically calculates transit time from candidate addresses to a specified destination.
-- Displays transit times clearly next to each candidate's name.
-- Easy toggle (checkbox) to enable or disable automatic calculation.
-- Stylish, user-friendly popup interface.
+- ✅ Automatically calculates transit times for each candidate listed.
+- ✅ Displays the transit time clearly next to each candidate's name.
+- ✅ Highlights the candidate's cell based on transit time duration.
+- ✅ Supports dynamic pagination and filtering.
+- ✅ Easy toggle to enable/disable automatic calculation.
+- ✅ User-friendly interface with clean design.
 
-## 🔧 Installation
+## 🎨 Color Legend for Transit Times
+
+Transit time durations are visually highlighted with colors for easy reference:
+
+| Duration (minutes)        | Color          | Hex Code |
+|---------------------------|----------------|----------|
+| 25 minutes or less        | 🟢 Light Green | `#b3ffcc`|
+| From 26 to 40 minutes     | 🟣 Light Purple| `#e0ccff`|
+| From 41 to 60 minutes     | 🟠 Light Orange| `#ffdab3`|
+| 61 minutes or more        | 🔴 Light Red   | `#ffb3b3`|
+
+## 🔧 Setup
 
 ### Step 1: Clone Repository
 
@@ -18,40 +31,28 @@ This Chrome extension calculates public transportation transit times automatical
 git clone YOUR_REPOSITORY_URL.git
 ```
 
-### Step 2: Setup Your API Key
+### Step 2: Install Extension
 
-Create a file named `config.js` in the root folder with your Google Maps API key:
+- Open Chrome and navigate to `chrome://extensions`
+- Enable **Developer Mode**
+- Click **"Load unpacked"** and select your cloned folder
+
+### Step 3: Configure Google Maps API Key
+
+Create a file named `config.js` in the root directory (this file is ignored by git for security):
 
 ```javascript
 const GOOGLE_MAPS_API_KEY = 'YOUR_GOOGLE_MAPS_API_KEY';
 ```
 
-> ⚠️ **Important**: Never commit your `config.js` file to version control.
+- Obtain your API key from [Google Cloud Console](https://console.cloud.google.com)
+- Enable the **Routes API (Distance Matrix)**
 
-### Step 3: Load Extension in Chrome
+### Step 4: Enable Extension in Chrome
 
-- Open Chrome and go to `chrome://extensions`.
-- Activate **Developer Mode**.
-- Click **"Load unpacked"** and select the extension folder.
+- Click the extension icon and enable **"Auto-calculate on Viterbit"**.
+- Set your destination address.
 
-## ⚙️ API Configuration
+## 📄 License
 
-- Get your Google Maps API Key from [Google Cloud Console](https://console.cloud.google.com).
-- Enable the **Routes API (Distance Matrix)** service.
-
-## 🚩 Important Notes
-
-- Ensure your billing and quotas on Google Cloud are configured correctly.
-- Always keep your API key secure.
-
-## 📝 `.gitignore`
-
-Create a `.gitignore` file containing:
-
-```
-config.js
-```
-
----
-
-Enjoy your enhanced candidate management with effortless transit time calculations! 🚀
+MIT © Learning on the Job SL
