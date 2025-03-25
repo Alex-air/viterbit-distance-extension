@@ -1,47 +1,24 @@
-let observer = null;
-let currentDestination = 'Puerta del Sol, Madrid';
-let autoCalculateEnabled = false;
 let apiKey = null;
+let currentDestination = 'Puerta del Sol, Madrid';
 
-// Fetch initial settings from storage
 chrome.storage.local.get(['apiKey'], (data) => {
   apiKey = data.apiKey;
 });
 
-chrome.storage.sync.get(['autoCalculate', 'destination'], (data) => {
-  autoCalculateEnabled = data.autoCalculate || false;
+chrome.storage.sync.get(['destination'], (data) => {
   currentDestination = data.destination || currentDestination;
-
-  if (autoCalculateEnabled) {
-//    setupObserver();
-  }
 });
 
-// Listen for changes in storage
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.autoCalculate) {
-    autoCalculateEnabled = changes.autoCalculate.newValue;
-    autoCalculateEnabled ? setupObserver() : disconnectObserver();
-  }
   if (changes.destination) {
     currentDestination = changes.destination.newValue;
-    if (autoCalculateEnabled) calculateAllTransitTimes();
+    calculateAllTransitTimes();
   }
   if (changes.apiKey) {
     apiKey = changes.apiKey.newValue;
   }
 });
 
-
-const checkInterval = setInterval(() => {
-  const rows = document.querySelectorAll('tr.kt-datatable__row');
-  if (rows.length > 1) { // Rows are loaded
-    clearInterval(checkInterval);
-    calculateAllTransitTimes();
-  }
-}, 1000); // checks every second
-
-// Debounce helper function
 function debounce(fn, delay) {
   let timer;
   return (...args) => {
@@ -50,8 +27,47 @@ function debounce(fn, delay) {
   };
 }
 
-// Calculate transit times for each row
+let isCalculating = false;
+
+function setupObserver() {
+  const tableBody = document.querySelector('table');
+
+  if (!tableBody) {
+    console.error('Table not found for observer setup.');
+    return;
+  }
+
+  const observer = new MutationObserver(debounce(() => {
+    if (!isCalculating) {
+      calculateAllTransitTimes();
+    } else {
+      console.log('Calculation already running, skipped extra call.');
+    }
+  }, 800));
+
+  observer.observe(tableBody, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+const initialCheckInterval = setInterval(() => {
+  if (document.querySelectorAll('tr.kt-datatable__row').length > 1) {
+    clearInterval(initialCheckInterval);
+    calculateAllTransitTimes();
+    setupObserver();
+  }
+}, 1000);
+
 async function calculateAllTransitTimes() {
+  if (isCalculating) {
+    console.warn('Calculation in progress, skipped extra call.');
+    return;
+  }
+
+  isCalculating = true;
+  console.log('Starting API call...');
+
   const rows = document.querySelectorAll('tr.kt-datatable__row');
   if (!rows || rows.length < 2 || !apiKey) {
     console.error('API Key missing or no rows available.');
@@ -59,7 +75,7 @@ async function calculateAllTransitTimes() {
   }
 
   const originAddresses = [];
-  const rowIndexMap = {};  // To map Google's originIndex to row
+  const rowIndexMap = {};
 
   for (let i = 1; i < rows.length; i++) {
     const streetEl = rows[i].querySelector('td[data-field="67c81d758da89225d90cf7cb"] span');
@@ -80,11 +96,11 @@ async function calculateAllTransitTimes() {
     }
 
     if (!origin) {
-      console.warn(`Skipping invalid address at row ${i}`);
+      resetTransitTime(rows[i]);
       continue;
     }
 
-    rowIndexMap[originAddresses.length] = rows[i];  // Map Google index to original row
+    rowIndexMap[originAddresses.length] = rows[i];
     originAddresses.push({ waypoint: { address: origin } });
   }
 
@@ -108,6 +124,8 @@ async function calculateAllTransitTimes() {
       })
     });
 
+    console.log('API call sent');
+
     if (!response.ok) {
       const errorData = await response.json();
       console.error('API Error:', JSON.stringify(errorData, null, 2));
@@ -120,26 +138,27 @@ async function calculateAllTransitTimes() {
       const originIdx = result.originIndex;
       const duration = result.duration;
       const row = rowIndexMap[originIdx];
-    
+
       if (duration && row) {
         insertTransitTime(row, formatDuration(duration));
       } else if (row) {
         resetTransitTime(row);
-        console.warn(`No duration found or invalid row for originIndex: ${originIdx}`);
       }
     });
 
   } catch (e) {
     console.error('Exception during API call:', e);
   }
+  finally {
+    isCalculating = false;
+    console.log('API call finished.');
+  }
 }
 
-// Insert calculated time into the DOM
 function insertTransitTime(row, transitTime) {
   const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
   if (!nameCell) return;
 
-  // Extract minutes from transitTime string
   const timeMatch = transitTime.match(/(?:(\d+) hr )?(\d+) min/);
   if (!timeMatch) return;
 
@@ -149,29 +168,21 @@ function insertTransitTime(row, transitTime) {
 
   let bgColor;
 
-  if (totalMinutes <= 25) {
-    bgColor = '#b3ffcc'; // light green
-  } else if (totalMinutes <= 40) {
-    bgColor = '#e0ccff'; // light purple
-  } else if (totalMinutes <= 60) {
-    bgColor = '#ffdab3'; // light orange
-  } else {
-    bgColor = '#ffb3b3'; // light red
-  }
+  if (totalMinutes <= 25) bgColor = '#b3ffcc';
+  else if (totalMinutes <= 40) bgColor = '#e0ccff';
+  else if (totalMinutes <= 60) bgColor = '#ffdab3';
+  else bgColor = '#ffb3b3';
 
-  // Apply background color to the entire cell
   nameCell.style.backgroundColor = bgColor;
   nameCell.style.padding = '8px';
   nameCell.style.borderRadius = '4px';
 
-  // Ensure transit time label is clearly visible (black color)
-  const nameElement = nameCell.querySelector('.kt-user-card-v2__name');
-  let span = nameElement.querySelector('.transit-time');
+  let span = nameCell.querySelector('.transit-time');
   if (!span) {
     span = document.createElement('span');
     span.className = 'transit-time';
     span.style.cssText = 'margin-left:8px;color:black;';
-    nameElement.appendChild(span);
+    nameCell.querySelector('.kt-user-card-v2__name').appendChild(span);
   }
   span.textContent = `(${transitTime})`;
 }
@@ -180,20 +191,18 @@ function resetTransitTime(row) {
   const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
   if (!nameCell) return;
 
-  // Reset background color and styling
   nameCell.style.backgroundColor = '';
   nameCell.style.padding = '';
   nameCell.style.borderRadius = '';
 
-  // Remove transit time label if present
   const timeLabel = nameCell.querySelector('.transit-time');
-  if (timeLabel) {
-    timeLabel.remove();
-  }
+  if (timeLabel) timeLabel.remove();
 }
 
-// Format duration nicely
 function formatDuration(duration) {
-  let s = parseInt(duration.replace('s', ''), 10), h = Math.floor(s / 3600), m = Math.ceil((s % 3600) / 60);
+  let s = parseInt(duration.replace('s', ''), 10);
+  let h = Math.floor(s / 3600);
+  let m = Math.ceil((s % 3600) / 60);
   return h ? `${h} hr ${m} min` : `${m} min`;
 }
+
