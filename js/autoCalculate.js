@@ -13,7 +13,7 @@ chrome.storage.sync.get(['autoCalculate', 'destination'], (data) => {
   currentDestination = data.destination || currentDestination;
 
   if (autoCalculateEnabled) {
-    setupObserver();
+//    setupObserver();
   }
 });
 
@@ -32,26 +32,14 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
-// Setup observer to detect page changes
-function setupObserver() {
-  if (observer) return;
 
-  observer = new MutationObserver(debounce(() => {
+const checkInterval = setInterval(() => {
+  const rows = document.querySelectorAll('tr.kt-datatable__row');
+  if (rows.length > 1) { // Rows are loaded
+    clearInterval(checkInterval);
     calculateAllTransitTimes();
-  }, 500));
-
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  calculateAllTransitTimes();
-}
-
-// Disconnect observer when not needed
-function disconnectObserver() {
-  if (observer) {
-    observer.disconnect();
-    observer = null;
   }
-}
+}, 1000); // checks every second
 
 // Debounce helper function
 function debounce(fn, delay) {
@@ -65,7 +53,13 @@ function debounce(fn, delay) {
 // Calculate transit times for each row
 async function calculateAllTransitTimes() {
   const rows = document.querySelectorAll('tr.kt-datatable__row');
-  if (!rows || rows.length < 2 || !apiKey) return;
+  if (!rows || rows.length < 2 || !apiKey) {
+    console.error('API Key missing or no rows available.');
+    return;
+  }
+
+  const originAddresses = [];
+  const rowIndexMap = {};  // To map Google's originIndex to row
 
   for (let i = 1; i < rows.length; i++) {
     const streetEl = rows[i].querySelector('td[data-field="67c81d758da89225d90cf7cb"] span');
@@ -73,31 +67,70 @@ async function calculateAllTransitTimes() {
 
     const street = streetEl ? streetEl.innerText.trim() : '';
     const city = cityEl ? cityEl.innerText.trim() : '';
-    const origin = street && city ? `${street}, ${city}` : (city || street);
-    if (!origin) continue;
 
-    try {
-      const response = await fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'duration'
-        },
-        body: JSON.stringify({
-          origins: [{ waypoint: { address: origin } }],
-          destinations: [{ waypoint: { address: currentDestination } }],
-          travelMode: 'TRANSIT'
-        })
-      });
+    let origin = '';
 
-      const data = await response.json();
-      if (data && data[0]?.duration) {
-        insertTransitTime(rows[i], formatDuration(data[0].duration));
+    if (street && !street.toLowerCase().includes('no hay dirección')) {
+      origin = street;
+      if (city && !street.toLowerCase().includes(city.toLowerCase())) {
+        origin += `, ${city}`;
       }
-    } catch (e) {
-      console.error(`Error row ${i}:`, e);
+    } else if (city && !city.toLowerCase().includes('no hay dirección')) {
+      origin = city;
     }
+
+    if (!origin) {
+      console.warn(`Skipping invalid address at row ${i}`);
+      continue;
+    }
+
+    rowIndexMap[originAddresses.length] = rows[i];  // Map Google index to original row
+    originAddresses.push({ waypoint: { address: origin } });
+  }
+
+  if (originAddresses.length === 0) {
+    console.warn('No valid origin addresses found.');
+    return;
+  }
+
+  try {
+    const response = await fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'duration,originIndex'
+      },
+      body: JSON.stringify({
+        origins: originAddresses,
+        destinations: [{ waypoint: { address: currentDestination } }],
+        travelMode: 'TRANSIT'
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('API Error:', JSON.stringify(errorData, null, 2));
+      return;
+    }
+
+    const data = await response.json();
+
+    data.forEach((result) => {
+      const originIdx = result.originIndex;
+      const duration = result.duration;
+      const row = rowIndexMap[originIdx];
+    
+      if (duration && row) {
+        insertTransitTime(row, formatDuration(duration));
+      } else if (row) {
+        resetTransitTime(row);
+        console.warn(`No duration found or invalid row for originIndex: ${originIdx}`);
+      }
+    });
+
+  } catch (e) {
+    console.error('Exception during API call:', e);
   }
 }
 
@@ -141,6 +174,22 @@ function insertTransitTime(row, transitTime) {
     nameElement.appendChild(span);
   }
   span.textContent = `(${transitTime})`;
+}
+
+function resetTransitTime(row) {
+  const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
+  if (!nameCell) return;
+
+  // Reset background color and styling
+  nameCell.style.backgroundColor = '';
+  nameCell.style.padding = '';
+  nameCell.style.borderRadius = '';
+
+  // Remove transit time label if present
+  const timeLabel = nameCell.querySelector('.transit-time');
+  if (timeLabel) {
+    timeLabel.remove();
+  }
 }
 
 // Format duration nicely
