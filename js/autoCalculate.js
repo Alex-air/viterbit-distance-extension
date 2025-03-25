@@ -1,5 +1,6 @@
 let apiKey = null;
 let currentDestination = 'Puerta del Sol, Madrid';
+let observer;
 
 chrome.storage.local.get(['apiKey'], (data) => {
   apiKey = data.apiKey;
@@ -12,7 +13,6 @@ chrome.storage.sync.get(['destination'], (data) => {
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.destination) {
     currentDestination = changes.destination.newValue;
-    calculateAllTransitTimes();
   }
   if (changes.apiKey) {
     apiKey = changes.apiKey.newValue;
@@ -27,50 +27,35 @@ function debounce(fn, delay) {
   };
 }
 
-let isCalculating = false;
-
 function setupObserver() {
   const tableBody = document.querySelector('table');
+  if (!tableBody) return;
 
-  if (!tableBody) {
-    console.error('Table not found for observer setup.');
-    return;
-  }
-
-  const observer = new MutationObserver(debounce(() => {
-    if (!isCalculating) {
+  observer = new MutationObserver(debounce(() => {
+    const rows = document.querySelectorAll('tr.kt-datatable__row');
+    if (rows.length > 1) {
       calculateAllTransitTimes();
-    } else {
-      console.log('Calculation already running, skipped extra call.');
     }
   }, 800));
 
-  observer.observe(tableBody, {
-    childList: true,
-    subtree: true,
-  });
+  observer.observe(tableBody, { childList: true, subtree: true });
 }
 
-const initialCheckInterval = setInterval(() => {
-  if (document.querySelectorAll('tr.kt-datatable__row').length > 1) {
-    clearInterval(initialCheckInterval);
-    calculateAllTransitTimes();
+const observerCheckInterval = setInterval(() => {
+  const tableBody = document.querySelector('table');
+  if (tableBody && document.querySelectorAll('tr.kt-datatable__row').length > 1) {
+    clearInterval(observerCheckInterval);
     setupObserver();
+    calculateAllTransitTimes();
   }
 }, 1000);
 
 async function calculateAllTransitTimes() {
-  if (isCalculating) {
-    console.warn('Calculation in progress, skipped extra call.');
-    return;
-  }
-
-  isCalculating = true;
-  console.log('Starting API call...');
+  if (observer) observer.disconnect();
 
   const rows = document.querySelectorAll('tr.kt-datatable__row');
   if (!rows || rows.length < 2 || !apiKey) {
-    console.error('API Key missing or no rows available.');
+    if (observer) setupObserver();
     return;
   }
 
@@ -105,11 +90,13 @@ async function calculateAllTransitTimes() {
   }
 
   if (originAddresses.length === 0) {
-    console.warn('No valid origin addresses found.');
+    if (observer) setupObserver();
     return;
   }
 
   try {
+    console.log("API called");
+    
     const response = await fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`, {
       method: 'POST',
       headers: {
@@ -124,11 +111,8 @@ async function calculateAllTransitTimes() {
       })
     });
 
-    console.log('API call sent');
-
     if (!response.ok) {
-      const errorData = await response.json();
-      console.error('API Error:', JSON.stringify(errorData, null, 2));
+      if (observer) setupObserver();
       return;
     }
 
@@ -147,11 +131,9 @@ async function calculateAllTransitTimes() {
     });
 
   } catch (e) {
-    console.error('Exception during API call:', e);
-  }
-  finally {
-    isCalculating = false;
-    console.log('API call finished.');
+    console.error('API call error:', e);
+  } finally {
+    if (observer) setupObserver();
   }
 }
 
@@ -205,4 +187,3 @@ function formatDuration(duration) {
   let m = Math.ceil((s % 3600) / 60);
   return h ? `${h} hr ${m} min` : `${m} min`;
 }
-
