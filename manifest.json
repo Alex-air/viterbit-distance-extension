@@ -5,14 +5,14 @@
     "permissions": ["storage", "scripting"],
     "host_permissions": [
       "https://routes.googleapis.com/*",
-      "https://app.viterbit.com/candidates/*"
+      "https://app.viterbit.com/*"
     ],
     "action": {
       "default_popup": "popup.html"
     },
     "content_scripts": [
       {
-        "matches": ["https://app.viterbit.com/jobs/*"],
+        "matches": ["https://app.viterbit.com/jobs/*", "https://app.viterbit.com/jobs/*/*"],
         "js": ["js/autoCalculate.js"]
       }
     ]
