@@ -10,6 +10,7 @@ function saveAndSendDestination(address) {
         type: "destination_set",
         address: address
       });
+      window.close();
     });
   });
 }
@@ -17,7 +18,7 @@ function saveAndSendDestination(address) {
 document.getElementById("set-address").addEventListener("click", () => {
   const address = document.getElementById("destination").value.trim();
   if (!address) {
-    alert("Por favor, introduce una dirección válida.");
+    alert("Please set a valid address");
     return;
   }
   saveAndSendDestination(address);
@@ -27,7 +28,7 @@ document.getElementById("destination").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     const address = document.getElementById("destination").value.trim();
     if (!address) {
-      alert("Por favor, introduce una dirección válida.");
+      alert("Please set a valid address");
       return;
     }
     saveAndSendDestination(address);
