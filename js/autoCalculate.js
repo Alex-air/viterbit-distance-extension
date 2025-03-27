@@ -6,6 +6,15 @@ const STORAGE_KEY = "transit_cache";
 const STORAGE_LIMIT_BYTES = 4 * 1024 * 1024; // 4MB limit for chrome.storage.local
 const STORAGE_THRESHOLD_BYTES = 3.5 * 1024 * 1024; // Clean if usage exceeds 3.5MB
 
+function normalizeAddress(address) {
+  return address
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/\s+/g, "")
+    .replace(/,/g, "");
+}
+
 function getNextMonday0830CET() {
   const now = new Date();
   const dayOfWeek = now.getDay();
@@ -22,7 +31,7 @@ function parseCsvData(csvString) {
   lines.forEach((line) => {
     const [origin, duration] = line.split("|");
     if (origin && duration) {
-      data[origin.trim().toLowerCase()] = duration.trim();
+      data[normalizeAddress(origin.trim())] = duration.trim();
     }
   });
   return data;
@@ -140,15 +149,15 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
             console.warn("⚠️ Missing origin for index:", index, result);
             return;
           }
-          const row = originRowMap.get(origin.toLowerCase());
+          const row = originRowMap.get(normalizeAddress(origin));
 
           const durationSec = result?.duration?.seconds || parseInt(result?.duration?.replace("s", ""));
           if (durationSec && !isNaN(durationSec)) {
-            updatedCsvData[origin.toLowerCase()] = durationSec;
+            updatedCsvData[normalizeAddress(origin)] = durationSec;
             applyTransitResult(row, durationSec);
           } else if (row) {
             console.warn(`No duration for: ${origin}`, result);
-            updatedCsvData[origin.toLowerCase()] = "-1";
+            updatedCsvData[normalizeAddress(origin)] = "-1";
             applyTransitResult(row, "-1");
           }
         });
@@ -165,15 +174,14 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
 
 function processPage(destination) {
   chrome.storage.local.get([STORAGE_KEY], (result) => {
-    const normalizedDestination = destination.trim().toLowerCase();
+    const cacheKey = normalizeAddress(destination);
     let cache = result[STORAGE_KEY] || { data: {} };
 
     const rows = [...document.querySelectorAll("tr.kt-datatable__row")].filter(
       (row) => row.querySelector('[data-field="name"]') !== null
     );
 
-    const cacheDataKey = normalizedDestination;
-    const cachedCsv = cache.data[cacheDataKey] || "";
+    const cachedCsv = cache.data[cacheKey] || "";
     const cachedData = parseCsvData(cachedCsv);
 
     const uncachedOrigins = [];
@@ -183,18 +191,18 @@ function processPage(destination) {
       const origin = getAddressFromRow(row);
       if (!origin) return;
 
-      const lowerOrigin = origin.toLowerCase();
-      const durationValue = cachedData[lowerOrigin];
+      const normOrigin = normalizeAddress(origin);
+      const durationValue = cachedData[normOrigin];
       if (durationValue !== undefined) {
         applyTransitResult(row, durationValue);
       } else {
         uncachedOrigins.push(origin);
-        originRowMap.set(lowerOrigin, row);
+        originRowMap.set(normOrigin, row);
       }
     });
 
     if (uncachedOrigins.length > 0) {
-      calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheDataKey);
+      calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheKey);
     } else {
       console.log("All values cached for destination:", destination);
       logCacheStats(cache);
