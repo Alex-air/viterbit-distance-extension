@@ -29,7 +29,7 @@ function parseCsvData(csvString) {
   lines.forEach((line) => {
     const [origin, duration] = line.split("|");
     if (origin && duration) {
-      data[origin.trim().toLowerCase()] = parseInt(duration.trim());
+      data[origin.trim().toLowerCase()] = duration.trim();
     }
   });
   return data;
@@ -55,26 +55,33 @@ function applyTransitResult(row, durationSec) {
   const existingLabel = nameLink.querySelector(".transit-label");
   if (existingLabel) existingLabel.remove();
 
-  const minutes = Math.round(durationSec / 60);
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-
   const label = document.createElement("strong");
   label.className = "transit-label";
-  label.textContent = hours > 0 ? ` (${hours}h ${remainingMinutes}min)` : ` (${minutes} min)`;
-  label.style.marginLeft = "6px";
 
+  let minutes = null;
+  let backgroundColor = "";
+
+  if (durationSec === "-1") {
+    label.textContent = " (- min)";
+    backgroundColor = "#ffe6e6";
+  } else {
+    const seconds = parseInt(durationSec);
+    minutes = Math.round(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    label.textContent = hours > 0 ? ` (${hours}h ${remainingMinutes}min)` : ` (${minutes} min)`;
+
+    if (minutes <= 25) backgroundColor = "#ccffcc";
+    else if (minutes <= 40) backgroundColor = "#e5ccff";
+    else if (minutes <= 60) backgroundColor = "#ffe5cc";
+    else backgroundColor = "#ffcccc";
+  }
+
+  label.style.marginLeft = "6px";
   nameLink.appendChild(label);
 
   const targetCell = nameLink.closest(".kt-datatable__cell");
-  if (targetCell) {
-    let bg = "";
-    if (minutes <= 25) bg = "#ccffcc";
-    else if (minutes <= 40) bg = "#e5ccff";
-    else if (minutes <= 60) bg = "#ffe5cc";
-    else bg = "#ffcccc";
-    targetCell.style.backgroundColor = bg;
-  }
+  if (targetCell) targetCell.style.backgroundColor = backgroundColor;
 }
 
 function autoCleanupIfStorageTooLarge(cache) {
@@ -93,6 +100,19 @@ function autoCleanupIfStorageTooLarge(cache) {
   return cache;
 }
 
+function logCacheStats(cache) {
+  const destinations = Object.keys(cache.data);
+  let totalEntries = 0;
+  destinations.forEach((k) => {
+    const lines = cache.data[k].split("\n").length;
+    console.log(`🗂 ${k} -> ${lines} entries`);
+    totalEntries += lines;
+  });
+  const totalSize = new Blob([JSON.stringify(cache)]).size;
+  console.log(`📊 Total cache entries this week: ${totalEntries}`);
+  console.log(`💾 Estimated storage usage: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+}
+
 function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheDataKey) {
   console.log("Calling API for:", uncachedOrigins);
   const originWaypoints = uncachedOrigins.map((address) => ({ waypoint: { address } }));
@@ -106,11 +126,12 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
 
   chrome.storage.local.get(["apiKey"], (config) => {
     const apiKey = config.apiKey;
-    fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix?key=${apiKey}`, {
-      method: "POST",
+    fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`, {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "X-Goog-FieldMask": "duration,originIndex"
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'duration,originIndex'
       },
       body: JSON.stringify(requestBody)
     })
@@ -132,14 +153,10 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
           if (durationSec && !isNaN(durationSec)) {
             updatedCsvData[origin.toLowerCase()] = durationSec;
             applyTransitResult(row, durationSec);
-          } else {
-            console.log("No duration for:", origin, result);
-            if (row) {
-              const existingLabel = row.querySelector(".transit-label");
-              if (existingLabel) existingLabel.remove();
-              const cell = row.querySelector(".kt-user-card-v2__name")?.closest(".kt-datatable__cell");
-              if (cell) cell.style.backgroundColor = "";
-            }
+          } else if (row) {
+            console.warn(`No duration for: ${origin}`, result);
+            updatedCsvData[origin.toLowerCase()] = "-1";
+            applyTransitResult(row, "-1");
           }
         });
 
@@ -147,26 +164,10 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
         const cleanedCache = autoCleanupIfStorageTooLarge(cache);
         chrome.storage.local.set({ [STORAGE_KEY]: cleanedCache }, () => {
           console.log("✅ Cache saved after API call and cleanup");
-          logCacheSize(cleanedCache);
+          logCacheStats(cleanedCache);
         });
       });
   });
-}
-
-function logCacheSize(cache) {
-  const destinationKeys = Object.keys(cache.data);
-  let totalRawEntries = destinationKeys.length;
-  console.log(`📊 Total cache destination entries this week: ${totalRawEntries}`);
-
-  for (const destination of destinationKeys) {
-    const entryCount = cache.data[destination].split("\n").length;
-    console.log(`📦 Cache for '${destination}' contains ${entryCount} origin entries`);
-  }
-
-  const totalString = JSON.stringify(cache);
-  const bytes = new Blob([totalString]).size;
-  const megabytes = (bytes / (1024 * 1024)).toFixed(2);
-  console.log(`💾 Estimated storage usage: ${megabytes} MB`);
 }
 
 function processPage(destination) {
@@ -194,9 +195,9 @@ function processPage(destination) {
       if (!origin) return;
 
       const lowerOrigin = origin.toLowerCase();
-      if (cachedData[lowerOrigin]) {
-        console.log(`Using cached value for ${origin}`);
-        applyTransitResult(row, cachedData[lowerOrigin]);
+      const durationValue = cachedData[lowerOrigin];
+      if (durationValue !== undefined) {
+        applyTransitResult(row, durationValue);
       } else {
         uncachedOrigins.push(origin);
         originRowMap.set(lowerOrigin, row);
@@ -207,7 +208,7 @@ function processPage(destination) {
       calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheDataKey);
     } else {
       console.log("All values cached for destination:", destination);
-      logCacheSize(cache);
+      logCacheStats(cache);
     }
   });
 }
