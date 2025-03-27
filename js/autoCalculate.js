@@ -1,189 +1,261 @@
-let apiKey = null;
-let currentDestination = 'Puerta del Sol, Madrid';
-let observer;
+// === autoCalculate.js ===
 
-chrome.storage.local.get(['apiKey'], (data) => {
-  apiKey = data.apiKey;
-});
+console.log("autoCalculate.js loaded");
 
-chrome.storage.sync.get(['destination'], (data) => {
-  currentDestination = data.destination || currentDestination;
-});
+const STORAGE_KEY = "transit_cache";
+const ORIGIN_WEEK_KEY = `${new Date().getFullYear()}-W${getWeekNumber(new Date())}`;
+const STORAGE_LIMIT_BYTES = 4 * 1024 * 1024; // 4MB limit for chrome.storage.local
+const STORAGE_THRESHOLD_BYTES = 3.5 * 1024 * 1024; // Clean if usage exceeds 3.5MB
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.destination) {
-    currentDestination = changes.destination.newValue;
+function getWeekNumber(date) {
+  const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+  const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
+  return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+}
+
+function getNextMonday0830CET() {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const daysUntilMonday = (8 - dayOfWeek) % 7 || 7;
+  const nextMonday = new Date(now);
+  nextMonday.setDate(now.getDate() + daysUntilMonday);
+  nextMonday.setUTCHours(6, 30, 0, 0); // 08:30 CET = 06:30 UTC
+  return Math.floor(nextMonday.getTime() / 1000);
+}
+
+function parseCsvData(csvString) {
+  const lines = csvString.split("\n");
+  const data = {};
+  lines.forEach((line) => {
+    const [origin, duration] = line.split("|");
+    if (origin && duration) {
+      data[origin.trim().toLowerCase()] = parseInt(duration.trim());
+    }
+  });
+  return data;
+}
+
+function encodeCsvData(data) {
+  return Object.entries(data).map(([origin, duration]) => `${origin}|${duration}`).join("\n");
+}
+
+function getAddressFromRow(row) {
+  const streetCell = row.querySelector('[data-field="67c81d758da89225d90cf7cb"] span');
+  const cityCell = row.querySelector('[data-field="city"] span');
+  const street = streetCell?.innerText.trim() || "";
+  const city = cityCell?.innerText.trim() || "";
+  const headerCheck = street.toLowerCase().includes("dirección domicilio completa") || city.toLowerCase().includes("ciudad");
+  return (!headerCheck && street && city) ? `${street}, ${city}` : null;
+}
+
+function applyTransitResult(row, durationSec) {
+  const nameLink = row.querySelector(".kt-user-card-v2__name");
+  if (!nameLink) return;
+
+  const existingLabel = nameLink.querySelector(".transit-label");
+  if (existingLabel) existingLabel.remove();
+
+  const minutes = Math.round(durationSec / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+
+  const label = document.createElement("strong");
+  label.className = "transit-label";
+  label.textContent = hours > 0 ? ` (${hours}h ${remainingMinutes}min)` : ` (${minutes} min)`;
+  label.style.marginLeft = "6px";
+
+  nameLink.appendChild(label);
+
+  const targetCell = nameLink.closest(".kt-datatable__cell");
+  if (targetCell) {
+    let bg = "";
+    if (minutes <= 25) bg = "#ccffcc";
+    else if (minutes <= 40) bg = "#e5ccff";
+    else if (minutes <= 60) bg = "#ffe5cc";
+    else bg = "#ffcccc";
+    targetCell.style.backgroundColor = bg;
   }
-  if (changes.apiKey) {
-    apiKey = changes.apiKey.newValue;
-  }
-});
+}
 
-function debounce(fn, delay) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), delay);
+function autoCleanupIfStorageTooLarge(cache) {
+  const totalString = JSON.stringify(cache);
+  const sizeInBytes = new Blob([totalString]).size;
+  if (sizeInBytes >= STORAGE_THRESHOLD_BYTES) {
+    console.warn("⚠️ Storage usage approaching limit. Cleaning up...");
+    const keys = Object.keys(cache.data);
+    keys.sort(() => Math.random() - 0.5);
+    while (new Blob([JSON.stringify(cache)]).size >= STORAGE_THRESHOLD_BYTES && keys.length > 0) {
+      const toRemove = keys.pop();
+      delete cache.data[toRemove];
+      console.log(`🧹 Removed cache for: ${toRemove}`);
+    }
+  }
+  return cache;
+}
+
+function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheDataKey) {
+  console.log("Calling API for:", uncachedOrigins);
+  const originWaypoints = uncachedOrigins.map((address) => ({ waypoint: { address } }));
+  const requestBody = {
+    origins: originWaypoints,
+    destinations: [{ waypoint: { address: destination } }],
+    travelMode: "TRANSIT",
+    languageCode: "es",
+    departureTime: { seconds: getNextMonday0830CET() }
   };
-}
 
-function setupObserver() {
-  const tableBody = document.querySelector('table');
-  if (!tableBody) return;
-
-  observer = new MutationObserver(debounce(() => {
-    const rows = document.querySelectorAll('tr.kt-datatable__row');
-    if (rows.length > 1) {
-      calculateAllTransitTimes();
-    }
-  }, 800));
-
-  observer.observe(tableBody, { childList: true, subtree: true });
-}
-
-const observerCheckInterval = setInterval(() => {
-  const tableBody = document.querySelector('table');
-  if (tableBody && document.querySelectorAll('tr.kt-datatable__row').length > 1) {
-    clearInterval(observerCheckInterval);
-    setupObserver();
-    calculateAllTransitTimes();
-  }
-}, 1000);
-
-async function calculateAllTransitTimes() {
-  if (observer) observer.disconnect();
-
-  const rows = document.querySelectorAll('tr.kt-datatable__row');
-  if (!rows || rows.length < 2 || !apiKey) {
-    if (observer) setupObserver();
-    return;
-  }
-
-  const originAddresses = [];
-  const rowIndexMap = {};
-
-  for (let i = 1; i < rows.length; i++) {
-    const streetEl = rows[i].querySelector('td[data-field="67c81d758da89225d90cf7cb"] span');
-    const cityEl = rows[i].querySelector('td[data-field="city"] span');
-
-    const street = streetEl ? streetEl.innerText.trim() : '';
-    const city = cityEl ? cityEl.innerText.trim() : '';
-
-    let origin = '';
-
-    if (street && !street.toLowerCase().includes('no hay dirección')) {
-      origin = street;
-      if (city && !street.toLowerCase().includes(city.toLowerCase())) {
-        origin += `, ${city}`;
-      }
-    } else if (city && !city.toLowerCase().includes('no hay dirección')) {
-      origin = city;
-    }
-
-    if (!origin) {
-      resetTransitTime(rows[i]);
-      continue;
-    }
-
-    rowIndexMap[originAddresses.length] = rows[i];
-    originAddresses.push({ waypoint: { address: origin } });
-  }
-
-  if (originAddresses.length === 0) {
-    if (observer) setupObserver();
-    return;
-  }
-
-  try {
-    console.log("API called");
-    
-    const response = await fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix`, {
-      method: 'POST',
+  chrome.storage.local.get(["apiKey"], (config) => {
+    const apiKey = config.apiKey;
+    fetch(`https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix?key=${apiKey}`, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'duration,originIndex'
+        "Content-Type": "application/json",
+        "X-Goog-FieldMask": "duration,originIndex"
       },
-      body: JSON.stringify({
-        origins: originAddresses,
-        destinations: [{ waypoint: { address: currentDestination } }],
-        travelMode: 'TRANSIT'
-      })
-    });
+      body: JSON.stringify(requestBody)
+    })
+      .then((res) => res.json())
+      .then((results) => {
+        console.log("API response:", results);
 
-    if (!response.ok) {
-      if (observer) setupObserver();
-      return;
+        const updatedCsvData = parseCsvData(cache.data[cacheDataKey] || "");
+        results.forEach((result) => {
+          const index = result.originIndex;
+          const origin = uncachedOrigins[index];
+          if (!origin) {
+            console.warn("⚠️ Missing origin for index:", index, result);
+            return;
+          }
+          const row = originRowMap.get(origin.toLowerCase());
+
+          const durationSec = result?.duration?.seconds || parseInt(result?.duration?.replace("s", ""));
+          if (durationSec && !isNaN(durationSec)) {
+            updatedCsvData[origin.toLowerCase()] = durationSec;
+            applyTransitResult(row, durationSec);
+          } else {
+            console.log("No duration for:", origin, result);
+            if (row) {
+              const existingLabel = row.querySelector(".transit-label");
+              if (existingLabel) existingLabel.remove();
+              const cell = row.querySelector(".kt-user-card-v2__name")?.closest(".kt-datatable__cell");
+              if (cell) cell.style.backgroundColor = "";
+            }
+          }
+        });
+
+        cache.data[cacheDataKey] = encodeCsvData(updatedCsvData);
+        const cleanedCache = autoCleanupIfStorageTooLarge(cache);
+        chrome.storage.local.set({ [STORAGE_KEY]: cleanedCache }, () => {
+          console.log("✅ Cache saved after API call and cleanup");
+          logCacheSize(cleanedCache);
+        });
+      });
+  });
+}
+
+function logCacheSize(cache) {
+  const destinationKeys = Object.keys(cache.data);
+  let totalRawEntries = destinationKeys.length;
+  console.log(`📊 Total cache destination entries this week: ${totalRawEntries}`);
+
+  for (const destination of destinationKeys) {
+    const entryCount = cache.data[destination].split("\n").length;
+    console.log(`📦 Cache for '${destination}' contains ${entryCount} origin entries`);
+  }
+
+  const totalString = JSON.stringify(cache);
+  const bytes = new Blob([totalString]).size;
+  const megabytes = (bytes / (1024 * 1024)).toFixed(2);
+  console.log(`💾 Estimated storage usage: ${megabytes} MB`);
+}
+
+function processPage(destination) {
+  chrome.storage.local.get([STORAGE_KEY], (result) => {
+    const normalizedDestination = destination.trim().toLowerCase();
+    let cache = result[STORAGE_KEY] || { week: ORIGIN_WEEK_KEY, data: {} };
+    if (cache.week !== ORIGIN_WEEK_KEY) {
+      console.log("New week detected, resetting cache");
+      cache = { week: ORIGIN_WEEK_KEY, data: {} };
     }
 
-    const data = await response.json();
+    const rows = [...document.querySelectorAll("tr.kt-datatable__row")].filter(
+      (row) => row.querySelector('[data-field="name"]') !== null
+    );
 
-    data.forEach((result) => {
-      const originIdx = result.originIndex;
-      const duration = result.duration;
-      const row = rowIndexMap[originIdx];
+    const cacheDataKey = normalizedDestination;
+    const cachedCsv = cache.data[cacheDataKey] || "";
+    const cachedData = parseCsvData(cachedCsv);
 
-      if (duration && row) {
-        insertTransitTime(row, formatDuration(duration));
-      } else if (row) {
-        resetTransitTime(row);
+    const uncachedOrigins = [];
+    const originRowMap = new Map();
+
+    rows.forEach((row) => {
+      const origin = getAddressFromRow(row);
+      if (!origin) return;
+
+      const lowerOrigin = origin.toLowerCase();
+      if (cachedData[lowerOrigin]) {
+        console.log(`Using cached value for ${origin}`);
+        applyTransitResult(row, cachedData[lowerOrigin]);
+      } else {
+        uncachedOrigins.push(origin);
+        originRowMap.set(lowerOrigin, row);
       }
     });
 
-  } catch (e) {
-    console.error('API call error:', e);
-  } finally {
-    if (observer) setupObserver();
+    if (uncachedOrigins.length > 0) {
+      calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMap, cache, cacheDataKey);
+    } else {
+      console.log("All values cached for destination:", destination);
+      logCacheSize(cache);
+    }
+  });
+}
+
+function waitForRowsAndRun(callback) {
+  const interval = setInterval(() => {
+    const rowsReady = document.querySelectorAll("tr.kt-datatable__row").length > 0;
+    if (rowsReady) {
+      clearInterval(interval);
+      callback();
+    }
+  }, 300);
+}
+
+let intervalId = null;
+let lastRowSignature = "";
+
+function setupInitialCheck(destination) {
+  if (intervalId) clearInterval(intervalId);
+
+  intervalId = setInterval(() => {
+    const rows = document.querySelectorAll("tr.kt-datatable__row");
+    const currentSignature = [...rows]
+      .map(row => row.innerText.trim().slice(0, 100))
+      .join("|");
+
+    if (currentSignature !== lastRowSignature) {
+      lastRowSignature = currentSignature;
+      console.log("🔄 Detected table content change, refreshing...");
+      processPage(destination);
+    }
+  }, 1000);
+}
+
+chrome.storage.local.get(["destination_address"], (data) => {
+  if (data.destination_address) {
+    waitForRowsAndRun(() => {
+      console.log("Auto-launching with destination:", data.destination_address);
+      processPage(data.destination_address);
+      setupInitialCheck(data.destination_address);
+    });
   }
-}
+});
 
-function insertTransitTime(row, transitTime) {
-  const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
-  if (!nameCell) return;
-
-  const timeMatch = transitTime.match(/(?:(\d+) hr )?(\d+) min/);
-  if (!timeMatch) return;
-
-  const hours = parseInt(timeMatch[1] || '0', 10);
-  const minutes = parseInt(timeMatch[2], 10);
-  const totalMinutes = (hours * 60) + minutes;
-
-  let bgColor;
-
-  if (totalMinutes <= 25) bgColor = '#b3ffcc';
-  else if (totalMinutes <= 40) bgColor = '#e0ccff';
-  else if (totalMinutes <= 60) bgColor = '#ffdab3';
-  else bgColor = '#ffb3b3';
-
-  nameCell.style.backgroundColor = bgColor;
-  nameCell.style.padding = '8px';
-  nameCell.style.borderRadius = '4px';
-
-  let span = nameCell.querySelector('.transit-time');
-  if (!span) {
-    span = document.createElement('span');
-    span.className = 'transit-time';
-    span.style.cssText = 'margin-left:8px;color:black;';
-    nameCell.querySelector('.kt-user-card-v2__name').appendChild(span);
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "destination_set" && msg.address) {
+    console.log("Received destination:", msg.address);
+    processPage(msg.address);
+    setupInitialCheck(msg.address);
   }
-  span.textContent = `(${transitTime})`;
-}
-
-function resetTransitTime(row) {
-  const nameCell = row.querySelector('.kt-user-card-v2__name')?.closest('.kt-datatable__cell');
-  if (!nameCell) return;
-
-  nameCell.style.backgroundColor = '';
-  nameCell.style.padding = '';
-  nameCell.style.borderRadius = '';
-
-  const timeLabel = nameCell.querySelector('.transit-time');
-  if (timeLabel) timeLabel.remove();
-}
-
-function formatDuration(duration) {
-  let s = parseInt(duration.replace('s', ''), 10);
-  let h = Math.floor(s / 3600);
-  let m = Math.ceil((s % 3600) / 60);
-  return h ? `${h} hr ${m} min` : `${m} min`;
-}
+});
