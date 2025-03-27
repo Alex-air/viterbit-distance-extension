@@ -3,15 +3,8 @@
 console.log("autoCalculate.js loaded");
 
 const STORAGE_KEY = "transit_cache";
-const ORIGIN_WEEK_KEY = `${new Date().getFullYear()}-W${getWeekNumber(new Date())}`;
 const STORAGE_LIMIT_BYTES = 4 * 1024 * 1024; // 4MB limit for chrome.storage.local
 const STORAGE_THRESHOLD_BYTES = 3.5 * 1024 * 1024; // Clean if usage exceeds 3.5MB
-
-function getWeekNumber(date) {
-  const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
-  const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
-  return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
-}
 
 function getNextMonday0830CET() {
   const now = new Date();
@@ -109,7 +102,7 @@ function logCacheStats(cache) {
     totalEntries += lines;
   });
   const totalSize = new Blob([JSON.stringify(cache)]).size;
-  console.log(`📊 Total cache entries this week: ${totalEntries}`);
+  console.log(`📊 Total cache entries: ${totalEntries}`);
   console.log(`💾 Estimated storage usage: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
 }
 
@@ -173,11 +166,7 @@ function calculateAndCacheTransitTimes(destination, uncachedOrigins, originRowMa
 function processPage(destination) {
   chrome.storage.local.get([STORAGE_KEY], (result) => {
     const normalizedDestination = destination.trim().toLowerCase();
-    let cache = result[STORAGE_KEY] || { week: ORIGIN_WEEK_KEY, data: {} };
-    if (cache.week !== ORIGIN_WEEK_KEY) {
-      console.log("New week detected, resetting cache");
-      cache = { week: ORIGIN_WEEK_KEY, data: {} };
-    }
+    let cache = result[STORAGE_KEY] || { data: {} };
 
     const rows = [...document.querySelectorAll("tr.kt-datatable__row")].filter(
       (row) => row.querySelector('[data-field="name"]') !== null
