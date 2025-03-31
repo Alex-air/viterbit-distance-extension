@@ -45,9 +45,11 @@ function getAddressFromRow(row) {
   const streetCell = row.querySelector('[data-field="67c81d758da89225d90cf7cb"] span');
   const cityCell = row.querySelector('[data-field="city"] span');
   const street = streetCell?.innerText.trim() || "";
+  const comma = street.length > 0 ? "," : "";
   const city = cityCell?.innerText.trim() || "";
   const headerCheck = street.toLowerCase().includes("dirección domicilio completa") || city.toLowerCase().includes("ciudad");
-  return (!headerCheck && street && city) ? `${street}, ${city}` : null;
+  const noCity = cityCell?.innerText.trim().toLowerCase() === "no hay dirección";
+  return (!headerCheck && !noCity && (street || city)) ? `${street}${comma} ${city}`.trim() : null;
 }
 
 function applyTransitResult(row, durationSec) {
