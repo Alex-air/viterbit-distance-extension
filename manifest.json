@@ -12,7 +12,7 @@
     },
     "content_scripts": [
       {
-        "matches": ["https://app.viterbit.com/jobs/*", "https://app.viterbit.com/jobs/*/*"],
+        "matches": ["https://app.viterbit.com/jobs/*", "https://app.viterbit.com/jobs/*/*", "https://app.viterbit.com/candidates/*"],
         "js": ["js/autoCalculate.js"]
       }
     ]
